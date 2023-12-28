@@ -16,10 +16,10 @@ int main(void) {
 	int vertex_count = 500;
 	file << "Ford" << std::endl;
 	file << "Parallel [ms]" << ";" << "Seq [ms]" << std::endl;
-	run_bellman_ford(vertex_count, file, threads_per_block, true, true);  // ustaw parametry funkcji w zaleznosci co ci potrzebne
+	run_bellman_ford(vertex_count, file, threads_per_block);
 	file << "Dijkstra" << std::endl;
 	file << "Parallel [ms]" << ";" << "Seq [ms]" << std::endl;
-	run_dijkstra(vertex_count, file, threads_per_block, true, true);
+	run_dijkstra(vertex_count, file, threads_per_block);
 	file.close();
 	return 0;
 }

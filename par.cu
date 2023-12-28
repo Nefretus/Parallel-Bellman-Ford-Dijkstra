@@ -197,7 +197,7 @@ __global__ void findAllMins(int* adjMat, int* outVec, size_t size) {
     }
 }
 
-void run_dijkstra(size_t size, std::ofstream& output_file, int block_size, bool run_seq = true, bool run_parallel = true) {
+void run_dijkstra(size_t size, std::ofstream& output_file, int block_size) {
     size_t gSize = size;
 
     int* adjMat;
@@ -249,7 +249,6 @@ void run_dijkstra(size_t size, std::ofstream& output_file, int block_size, bool 
     int* d_minTemp2;
 
     cudaMalloc((void**)&d_minTemp1, sizeof(int) * gSize);
-
 
     float duration_par = 0;
     cudaEvent_t start_pararell, stop_pararell;
@@ -341,7 +340,7 @@ void run_dijkstra(size_t size, std::ofstream& output_file, int block_size, bool 
     free(shortestOut);
 }
 
-void run_bellman_ford(size_t size, std::ofstream& output_file, int block_size, bool run_seq = true, bool run_parallel = true) {
+void run_bellman_ford(size_t size, std::ofstream& output_file, int block_size) {
     std::cout << '\n' << "Size: " << size << std::endl;
 
     // Prepare CUDA layout
@@ -373,70 +372,64 @@ void run_bellman_ford(size_t size, std::ofstream& output_file, int block_size, b
     // Solve sequentially ford
     auto start_seq = std::chrono::high_resolution_clock::now();
     long long duration_seq = 0;
-    if (run_seq) {
-        seq_distances_result = bellman_ford_seq(adj_matrix);
-        duration_seq = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::high_resolution_clock::now() - start_seq).count();
-        std::cout
-            << "Bellman-ford sequential time: "
-            << '\n'
-            << duration_seq
-            << " ms "
-            << std::endl;
-    }
+    seq_distances_result = bellman_ford_seq(adj_matrix);
+    duration_seq = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::high_resolution_clock::now() - start_seq).count();
+    std::cout
+        << "Bellman-ford sequential time: "
+        << '\n'
+        << duration_seq
+        << " ms "
+        << std::endl;
 
     float duration_par = 0;
-    if (run_parallel) {
-        // device memory
-        int* d_Mat, * d_Dist;
-        cudaMalloc((void**)&d_Mat, size * size * sizeof(int));
-        cudaMalloc((void**)&d_Dist, size * sizeof(int));
+    // device memory
+    int* d_Mat, * d_Dist;
+    cudaMalloc((void**)&d_Mat, size * size * sizeof(int));
+    cudaMalloc((void**)&d_Dist, size * sizeof(int));
 
-        // load device memory from host memory
-        cudaMemcpy(d_Mat, h_Mat, size * size * sizeof(int), cudaMemcpyHostToDevice);
-        cudaMemcpy(d_Dist, h_Dist, size * sizeof(int), cudaMemcpyHostToDevice);
+    // load device memory from host memory
+    cudaMemcpy(d_Mat, h_Mat, size * size * sizeof(int), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_Dist, h_Dist, size * sizeof(int), cudaMemcpyHostToDevice);
 
-        // run pararell algorithm
-        cudaEvent_t start_pararell, stop_pararell;
-        cudaEventCreate(&start_pararell);
-        cudaEventCreate(&stop_pararell);
-        cudaEventRecord(start_pararell, 0);
+    // run pararell algorithm
+    cudaEvent_t start_pararell, stop_pararell;
+    cudaEventCreate(&start_pararell);
+    cudaEventCreate(&stop_pararell);
+    cudaEventRecord(start_pararell, 0);
 
-        for (int vertex = 0; vertex < size - 1; vertex++) {
-            bellman_ford_parallel << <grid_structure, block_structure >> > (d_Mat, d_Dist, size);
-            cudaDeviceSynchronize();
-        }
-
-        cudaEventRecord(stop_pararell, 0);
-        cudaEventSynchronize(stop_pararell);
-        cudaEventElapsedTime(&duration_par, start_pararell, stop_pararell);
-        cudaEventDestroy(start_pararell);
-        cudaEventDestroy(stop_pararell);
-
-        std::cout
-            << "Parallel time: "
-            << '\n'
-            << duration_par
-            << " ms "
-            << std::endl;
-
-        // get results
-        cudaMemcpy(h_Mat, d_Mat, size * size * sizeof(int), cudaMemcpyDeviceToHost);
-        cudaMemcpy(h_Dist, d_Dist, size * sizeof(int), cudaMemcpyDeviceToHost);
-
-        if (run_seq) {
-            bool match = true;
-            for (int i = 0; i < seq_distances_result.size(); i++) {
-                if (seq_distances_result[i] != h_Dist[i]) {
-                    match = false;
-                }
-            }
-            if (!match) std::cout << "Wrong" << std::endl;
-            else std::cout << "Correct" << std::endl;
-        }
-
-        cudaFree(d_Mat);
-        cudaFree(d_Dist);
+    for (int vertex = 0; vertex < size - 1; vertex++) {
+        bellman_ford_parallel << <grid_structure, block_structure >> > (d_Mat, d_Dist, size);
+        cudaDeviceSynchronize();
     }
+
+    cudaEventRecord(stop_pararell, 0);
+    cudaEventSynchronize(stop_pararell);
+    cudaEventElapsedTime(&duration_par, start_pararell, stop_pararell);
+    cudaEventDestroy(start_pararell);
+    cudaEventDestroy(stop_pararell);
+
+    std::cout
+        << "Parallel time: "
+        << '\n'
+        << duration_par
+        << " ms "
+        << std::endl;
+
+    // get results
+    cudaMemcpy(h_Mat, d_Mat, size * size * sizeof(int), cudaMemcpyDeviceToHost);
+    cudaMemcpy(h_Dist, d_Dist, size * sizeof(int), cudaMemcpyDeviceToHost);
+
+    bool match = true;
+    for (int i = 0; i < seq_distances_result.size(); i++) {
+        if (seq_distances_result[i] != h_Dist[i]) {
+            match = false;
+        }
+    }
+    if (!match) std::cout << "Wrong" << std::endl;
+    else std::cout << "Correct" << std::endl;
+
+    cudaFree(d_Mat);
+    cudaFree(d_Dist);
 
     // save to csv file
     output_file << std::to_string((int)duration_par) << ";" << std::to_string((int)duration_seq) << std::endl;
