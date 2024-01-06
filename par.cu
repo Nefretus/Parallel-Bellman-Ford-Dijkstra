@@ -98,11 +98,11 @@ __global__ void relax_f(int* c, int* f, int* u, int* matrix, size_t size) {
 //    }
 //}
 
-__global__ void update(int* U, int* F, int* d, int* del, size_t size) {
+__global__ void update(int* U, int* F, int* c, int* closest, size_t size) {
     int id = blockIdx.x * blockDim.x + threadIdx.x;
     if (id < size) {
         F[id] = 0;
-        if (U[id] && d[id] < del[0]) {
+        if (c[id] == *closest) {
             U[id] = 0;
             F[id] = 1;
         }
@@ -128,25 +128,42 @@ __global__ void update(int* U, int* F, int* d, int* del, size_t size) {
 //    }// forall
 //}
 
-//__global__ void minimum1(int *u, int* c, int* minimums, int n) {
-//    extern __shared__ int sdata[BLOCK_SIZE];
+// wersja     min_cool_1<<<gridSize, blockSize, blockSize * sizeof(int)>>>(d_u, d_c, d_minimums, n);
+__global__ void min_cool_1(int *u, int* c, int* minimums, int n) {
+    extern __shared__ int sdata[];
+    int thid = threadIdx.x;
+    int i = blockIdx.x * (2 * blockDim.x) + threadIdx.x;
+    int j = i + blockDim.x;
+    int data1 = (i < n) ? (u[i] ? c[i] : INT_MAX) : INT_MAX;
+    int data2 = (j < n) ? (u[j] ? c[j] : INT_MAX) : INT_MAX;
+    sdata[thid] = min(data1, data2);
+    __syncthreads();
+    for (int s = blockDim.x / 2; s > 0; s >>= 1) {
+        if (thid < s)
+            sdata[thid] = min(sdata[thid], sdata[thid + s]);
+        __syncthreads();
+    }
+    if (thid == 0) 
+        minimums[blockIdx.x] = sdata[0];
+}
+
+// wersja2 min_cool_2<<<gridSize, blockSize, blockSize * sizeof(int)>>>(d_u, d_c, d_minimums, n); 
+//__global__ void min_cool_2(int* u, int* c, int* minimums, int n, int* matrix) {
+//    extern __shared__ int sdata[];
+//    int unique_id = blockIdx.x * blockDim.x + threadIdx.x;
 //    int thid = threadIdx.x;
-//    int i = blockIdx.x * (2 * blockDim.x) + threadIdx.x;
-//    int j = i + blockDim.x;
-//    int data1 = (i < n) ? (u[i] ? c[i] : INT_MAX) : INT_MAX;
-//    int data2 = (j < n) ? (u[j] ? c[j] : INT_MAX) : INT_MAX;
-//    sdata[thid] = min(data1, data2);
+//    int row = unique_id % N; // 
+//    int col = unique_id / N; // czy zamienione?
+//    if ((row >= 0) && (row < n) && (col >= 0) && (col < n))
+//        sdata[thid] = matrix[row * n + col];
 //    __syncthreads();
 //    for (int s = blockDim.x / 2; s > 0; s >>= 1) {
-//        if (thid < s) {
+//        if (thid < s)
 //            sdata[thid] = min(sdata[thid], sdata[thid + s]);
-//        }
 //        __syncthreads();
 //    }
-//    if (thid == 0) {
-//       // printf("%d\n", sdata[0]);
+//    if (thid == 0)
 //        minimums[blockIdx.x] = sdata[0];
-//    }
 //}
 
 __global__ void min(int* U, int* d, int* outDel, int* minOutEdges, size_t gSize, int useD) {
@@ -240,15 +257,17 @@ void run_dijkstra(size_t size, std::ofstream& output_file, int block_size) {
     int   del;
     int numBlocks = (gSize / block_size) + 1;
 
-    findAllMins << <numBlocks, block_size >> > (d_adjMat, d_minOutEdge, gSize);
+   // findAllMins << <numBlocks, block_size >> > (d_adjMat, d_minOutEdge, gSize);
 
     //////////////////////////////////////////////////////////////////////
     int  curSize = gSize;
     int  dFlag;
-    int* d_minTemp1;
+    int* minimus = (int*)malloc(sizeof(int) * gSize);
+    int* d_minimums;
     int* d_minTemp2;
 
-    cudaMalloc((void**)&d_minTemp1, sizeof(int) * gSize);
+    cudaMalloc((void**)&d_minimums, sizeof(int) * gSize);
+    cudaMemset((void*)d_minimums, 0, sizeof(int) * gSize);
 
     float duration_par = 0;
     cudaEvent_t start_pararell, stop_pararell;
@@ -257,36 +276,18 @@ void run_dijkstra(size_t size, std::ofstream& output_file, int block_size) {
     cudaEventRecord(start_pararell, 0);
 
     init << <numBlocks, block_size >> > (d_unvisited, d_frontier, d_estimates, gSize);
-
+    int min_i = INT_MAX;
     do {
-        dFlag = 1;
-        curSize = gSize;
-        cudaMemcpy(d_minTemp1, d_minOutEdge, sizeof(int) * gSize, cudaMemcpyDeviceToDevice);
-
-        // relax all frontiers
+        min_i = INT_MAX
         relax_f << <numBlocks, block_size >> > (d_estimates, d_frontier, d_unvisited, d_adjMat, gSize);
-
-        do {
-            min << <numBlocks, block_size >> > (d_unvisited, d_estimates, d_delta, d_minTemp1, curSize, dFlag);
-            d_minTemp2 = d_minTemp1;
-            d_minTemp1 = d_delta;
-            d_delta = d_minTemp2;
-        
-            curSize /= 2;
-            dFlag = 0;
-        } while (curSize > 0);
-        
-        d_minTemp2 = d_minTemp1;
-        d_minTemp1 = d_delta;
-        d_delta = d_minTemp2;
-
-        //minimum1 << <numBlocks, block_size >> > (_d_unvisited, _d_estimates, _d_minTemp1, size);
-
+        min_cool_1 << <numBlocks, blockSize, blockSize * sizeof(int) >> > (d_unvisited, d_estimates, d_minimums, gSize);
+        // find lineary minimum
+        cudaMemcpy(minimums, d_minimums, grid_size * sizeof(int), cudaMemcpyDeviceToHost);
+        for (int i = 0; i < numBlocks; i++) {
+            min_i = min(minimums[i], min_i);
+        }
         update << <numBlocks, block_size >> > (d_unvisited, d_frontier, d_estimates, d_delta, gSize);
-
-        //cudaMemcpy(&del, _d_minOutEdge, sizeof(int), cudaMemcpyDeviceToHost);
-        cudaMemcpy(&del, d_delta, sizeof(int), cudaMemcpyDeviceToHost);
-    } while (del != INT_MAX);
+    } while (min_i != INT_MAX)
 
     cudaEventRecord(stop_pararell, 0);
     cudaEventSynchronize(stop_pararell);
@@ -326,7 +327,7 @@ void run_dijkstra(size_t size, std::ofstream& output_file, int block_size) {
 
     output_file << std::to_string((int)duration_par) << ";" << std::to_string((int)duration_seq) << std::endl;
 
-    cudaFree(d_minTemp1);
+    cudaFree(d_minimums);
     //////////////////////////////////////////////////////////////////////
 
     cudaFree(d_adjMat);
@@ -338,6 +339,7 @@ void run_dijkstra(size_t size, std::ofstream& output_file, int block_size) {
     cudaFree(d_delta);
     free(adjMat);
     free(shortestOut);
+    free(minimus);
 }
 
 void run_bellman_ford(size_t size, std::ofstream& output_file, int block_size) {
